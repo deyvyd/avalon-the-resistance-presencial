@@ -21,9 +21,10 @@ const io = new Server(httpServer, {
     origin: "*",
     methods: ["GET", "POST"],
   },
+  path: '/avalon/socket.io',
 });
 
-const PORT = 3000;
+const PORT = parseInt(process.env.PORT ?? '3000', 10);
 
 interface Player {
   id: string; // Persistent ID
@@ -1005,10 +1006,11 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
-    app.get("*", (req, res) => {
+    app.use('/avalon', express.static(distPath));
+    app.get('/avalon/*', (req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
     });
+    app.get('/', (req, res) => res.redirect(301, '/avalon/'));
   }
 
   httpServer.listen(PORT, "0.0.0.0", () => {

@@ -2676,7 +2676,7 @@ export default function App() {
   const [socket, setSocket] = useState<Socket | null>(null);
 
   useEffect(() => {
-    const newSocket = io(window.location.origin);
+    const newSocket = io(window.location.origin, { path: '/avalon/socket.io' });
     setSocket(newSocket);
     return () => {
       newSocket.close();
@@ -2688,7 +2688,7 @@ export default function App() {
   return (
     <SocketContext.Provider value={socket}>
       <SettingsProvider>
-        <Router>
+        <Router basename="/avalon">
           <Routes>
             <Route path="/" element={<Home />} />
             <Route path="/room/:code" element={<Room />} />

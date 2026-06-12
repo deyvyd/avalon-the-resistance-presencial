@@ -7,6 +7,7 @@ import { VitePWA } from 'vite-plugin-pwa';
 export default defineConfig(({mode}) => {
   const env = loadEnv(mode, '.', '');
   return {
+    base: '/avalon/',
     plugins: [
       react(), 
       tailwindcss(),
@@ -19,6 +20,8 @@ export default defineConfig(({mode}) => {
           theme_color: '#ffd700',
           background_color: '#0d1b2a',
           display: 'standalone',
+          start_url: '/avalon/',
+          scope: '/avalon/',
           icons: [
             {
               src: 'https://picsum.photos/seed/avalon/192/192',
