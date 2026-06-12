@@ -9,6 +9,7 @@ import { Server } from "socket.io";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
+import { generateNarrationSequence, Roles } from "./src/core/avalon.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -411,7 +412,20 @@ io.on("connection", (socket) => {
     const room = rooms.get(roomCode);
     const { playerId } = socketToPlayer.get(socket.id) || {};
     if (!room || playerId !== room.hostId) return;
-    io.to(roomCode).emit("narration-started");
+
+    const roles: Roles = {
+      merlin: true,
+      assassin: true,
+      percival: room.selectedRoles.includes('percival'),
+      morgana: room.selectedRoles.includes('morgana'),
+      mordred: room.selectedRoles.includes('mordred'),
+      oberon: room.selectedRoles.includes('oberon'),
+      lancelotGood: room.selectedRoles.includes('lancelot_good'),
+      lancelotEvil: room.selectedRoles.includes('lancelot_evil'),
+    };
+
+    const sequence = generateNarrationSequence(roles, room.lancelotConfig, room.players.length);
+    io.to(roomCode).emit("narration-started", { sequence });
   });
 
   socket.on("narration-ended", ({ roomCode }) => {

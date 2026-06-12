@@ -175,55 +175,106 @@ export function assignRoles(playerIds: string[], selectedOptionalRoles: string[]
   return assignments;
 }
 
-export function getNarrationSequence(selectedRoles: string[], lancelotConfig?: LancelotConfig | null, playerCount?: number): string[] {
-  const sequence: string[] = ['1', '2'];
+export interface Roles {
+  merlin: boolean;
+  assassin: boolean;
+  percival: boolean;
+  morgana: boolean;
+  mordred: boolean;
+  oberon: boolean;
+  lancelotGood: boolean;
+  lancelotEvil: boolean;
+}
 
-  const hasLancelots = selectedRoles.includes('lancelot_good') && selectedRoles.includes('lancelot_evil');
-  const variant = lancelotConfig?.variant;
-  const usePolegar = hasLancelots && (variant === 'var1' || variant === 'var2' || variant === 'var1_var2' || variant === 'var1_var3' || variant === 'var2_var3');
+export function shouldPauseAfter(audioFile: string): boolean {
+  const noPause = ["1", "13", "14"];
+  const base = audioFile.split("-")[0];
+  return !noPause.includes(base);
+}
 
-  if (usePolegar) {
-    sequence.push('3-lancelot');
-    if (selectedRoles.includes('oberon')) {
-      sequence.push('4-oberon-lancelot');
-    } else {
-      sequence.push('4-lancelot');
+export function generateNarrationSequence(
+  roles: Roles,
+  lancelotConfig: LancelotConfig | null,
+  playerCount: number
+): string[] {
+  const sequence: string[] = [];
+  const hasLancelots = roles.lancelotGood || roles.lancelotEvil;
+
+  // ── CAMINHO A: sem Lancelots ──────────────────────────────────────────────
+  if (!hasLancelots) {
+    sequence.push("1");
+    sequence.push("2");
+    sequence.push("3");
+
+    sequence.push(roles.oberon ? "4-oberon" : "4");
+    sequence.push(roles.mordred ? "5-mordred" : "5");
+
+    sequence.push("6");
+    sequence.push("7");
+
+    if (roles.percival) {
+      sequence.push(roles.morgana ? "8-morgana" : "8");
+      sequence.push(roles.morgana ? "9-morgana" : "9");
+      sequence.push("10");
     }
-    if (selectedRoles.includes('mordred')) {
-      sequence.push('5-mordred-lancelot');
-    } else {
-      sequence.push('5-lancelot');
-    }
-  } else {
-    sequence.push('3');
-    if (selectedRoles.includes('oberon')) {
-      sequence.push('4-oberon');
-    } else {
-      sequence.push('4');
-    }
-    if (selectedRoles.includes('mordred')) {
-      sequence.push('5-mordred');
-    } else {
-      sequence.push('5');
-    }
+
+    sequence.push("13");
+    sequence.push("14");
+    return sequence;
   }
 
-  sequence.push('6', '7');
+  // ── CAMINHO B: Lancelots com Var 3 sozinha ───────────────────────────────
+  if (lancelotConfig?.variant === "var3") {
+    sequence.push("1");
+    sequence.push("2");
+    sequence.push("3");                                       // sem sufixo -lancelot
 
-  if (selectedRoles.includes('percival')) {
-    if (selectedRoles.includes('morgana')) {
-      sequence.push('8-morgana', '9-morgana');
-    } else {
-      sequence.push('8', '9');
+    sequence.push(roles.oberon ? "4-oberon" : "4");          // sem sufixo -lancelot
+    sequence.push(roles.mordred ? "5-mordred" : "5");        // sem sufixo -lancelot
+
+    sequence.push("6");
+    sequence.push("7");
+
+    if (roles.percival) {
+      sequence.push(roles.morgana ? "8-morgana" : "8");
+      sequence.push(roles.morgana ? "9-morgana" : "9");
+      sequence.push("10");
     }
-    sequence.push('10');
+
+    if (lancelotConfig?.recognition) {
+      sequence.push("11");
+      sequence.push("12");
+    }
+
+    sequence.push("13");
+    sequence.push("14");
+    return sequence;
   }
 
-  if (lancelotConfig?.recognition && (playerCount || 0) >= 8) {
-    sequence.push('11', '12');
+  // ── CAMINHO C: Lancelots com var1, var2, var1_var2, var1_var3, var2_var3 ─
+  sequence.push("1");
+  sequence.push("2");
+  sequence.push("3-lancelot");                               // Lancelot Mau levanta polegar
+
+  sequence.push(roles.oberon ? "4-oberon-lancelot" : "4-lancelot");
+  sequence.push(roles.mordred ? "5-mordred-lancelot" : "5-lancelot");
+
+  sequence.push("6");
+  sequence.push("7");
+
+  if (roles.percival) {
+    sequence.push(roles.morgana ? "8-morgana" : "8");
+    sequence.push(roles.morgana ? "9-morgana" : "9");
+    sequence.push("10");
   }
 
-  sequence.push('13', '14');
+  // recognition = true em var1_var3 e var2_var3 (var3 sozinha já foi tratada no Caminho B)
+  if (lancelotConfig?.recognition) {
+    sequence.push("11");
+    sequence.push("12");
+  }
 
+  sequence.push("13");
+  sequence.push("14");
   return sequence;
 }

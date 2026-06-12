@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, createContext, useContext, ReactNode } from 'react';
+import React, { useState, useEffect, createContext, useContext, ReactNode, useRef } from 'react';
 import { BrowserRouter as Router, Routes, Route, useNavigate, useParams } from 'react-router-dom';
 import { io, Socket } from 'socket.io-client';
 import { motion, AnimatePresence } from 'motion/react';
@@ -16,6 +16,8 @@ import {
   XCircle, 
   Crown, 
   Play, 
+  Pause,
+  RotateCcw,
   Volume2, 
   VolumeX, 
   SkipForward, 
@@ -26,13 +28,60 @@ import {
   LogOut,
   Droplets,
   Target,
+  Eye,
+  EyeOff,
   RefreshCw,
-  Equal
+  Equal,
+  Check,
+  X,
+  ChevronRight,
+  ChevronLeft,
+  ChevronDown,
+  ChevronUp,
+  Settings,
+  HelpCircle,
+  MapPinned,
+  Book
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
-import { ROLES, MISSION_SIZES, needsTwoFails, Team, getNarrationSequence, TEAM_DISTRIBUTION } from './core/avalon';
+import { GameGuide } from './components/GameGuide';
+import { GameManual } from './components/GameManual';
+import { 
+  ROLES, 
+  MISSION_SIZES, 
+  needsTwoFails, 
+  Team, 
+  generateNarrationSequence, 
+  shouldPauseAfter,
+  Roles,
+  TEAM_DISTRIBUTION 
+} from './core/avalon';
+
+// --- Constants ---
+
+const APP_VERSION = '1.2.0';
 
 // --- Types ---
+
+interface AvalonSettings {
+  musicEnabled: boolean;
+  musicVolume: number;
+  narrationVolume: number;
+  pauseDuration: number;
+  musicVolumeFaded: number;
+  keepScreenAwake: boolean;
+  confirmOnLeave: boolean;
+}
+
+const DEFAULT_SETTINGS: AvalonSettings = {
+  musicEnabled: true,
+  musicVolume: 0.15,
+  narrationVolume: 1.0,
+  pauseDuration: 5,
+  musicVolumeFaded: 0.15 * 0.33,
+  keepScreenAwake: true,
+  confirmOnLeave: true,
+};
 
 const getPersistentId = () => {
   let id = sessionStorage.getItem('avalon_player_id');
@@ -135,10 +184,351 @@ interface Room {
 
 const SocketContext = createContext<Socket | null>(null);
 
+const SettingsContext = createContext<{
+  settings: AvalonSettings;
+  updateSettings: (newSettings: Partial<AvalonSettings>) => void;
+  restoreDefaults: () => void;
+  showSettings: boolean;
+  setShowSettings: (show: boolean) => void;
+} | null>(null);
+
 const useSocket = () => {
   const socket = useContext(SocketContext);
   if (!socket) throw new Error('useSocket must be used within a SocketProvider');
   return socket;
+};
+
+const useSettings = () => {
+  const context = useContext(SettingsContext);
+  if (!context) throw new Error('useSettings must be used within a SettingsProvider');
+  return context;
+};
+
+const useWakeLock = (enabled: boolean) => {
+  const wakeLockRef = useRef<any>(null);
+
+  useEffect(() => {
+    const requestWakeLock = async () => {
+      if ('wakeLock' in navigator && enabled) {
+        try {
+          wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
+        } catch (err) {
+          console.error(`${err.name}, ${err.message}`);
+        }
+      }
+    };
+
+    const releaseWakeLock = async () => {
+      if (wakeLockRef.current) {
+        await wakeLockRef.current.release();
+        wakeLockRef.current = null;
+      }
+    };
+
+    if (enabled) {
+      requestWakeLock();
+    } else {
+      releaseWakeLock();
+    }
+
+    return () => {
+      releaseWakeLock();
+    };
+  }, [enabled]);
+};
+
+const SettingsProvider = ({ children }: { children: ReactNode }) => {
+  const [settings, setSettings] = useState<AvalonSettings>(() => {
+    const saved = localStorage.getItem('avalonSettings');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        // Validation
+        if (typeof parsed.narrationVolume !== 'number' || parsed.narrationVolume < 0.5 || parsed.narrationVolume > 1.5) {
+          parsed.narrationVolume = 1.0;
+        }
+        if (typeof parsed.musicVolume !== 'number' || parsed.musicVolume < 0 || parsed.musicVolume > 1) {
+          parsed.musicVolume = 0.15;
+        }
+        parsed.musicVolumeFaded = parsed.musicVolume * 0.33;
+        return { ...DEFAULT_SETTINGS, ...parsed };
+      } catch (e) {
+        return DEFAULT_SETTINGS;
+      }
+    }
+    return DEFAULT_SETTINGS;
+  });
+
+  const [showSettings, setShowSettings] = useState(false);
+  const musicRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    if (!musicRef.current) {
+      musicRef.current = new Audio('/src/assets/audios/soundtrack-selection.mp3');
+      musicRef.current.loop = true;
+    }
+
+    if (settings.musicEnabled) {
+      musicRef.current.volume = settings.musicVolume;
+      musicRef.current.play().catch(e => console.log("Music play blocked by browser policy"));
+    } else {
+      musicRef.current.pause();
+    }
+  }, [settings.musicEnabled, settings.musicVolume]);
+
+  const updateSettings = (newSettings: Partial<AvalonSettings>) => {
+    setSettings(prev => {
+      const updated = { ...prev, ...newSettings };
+      if (newSettings.musicVolume !== undefined) {
+        updated.musicVolumeFaded = newSettings.musicVolume * 0.33;
+      }
+      return updated;
+    });
+  };
+
+  const restoreDefaults = () => {
+    if (window.confirm('Restaurar todas as configurações para os valores padrão?')) {
+      setSettings(DEFAULT_SETTINGS);
+      localStorage.setItem('avalonSettings', JSON.stringify(DEFAULT_SETTINGS));
+      setShowSettings(false);
+    }
+  };
+
+  const saveSettings = () => {
+    localStorage.setItem('avalonSettings', JSON.stringify(settings));
+    setShowSettings(false);
+  };
+
+  useWakeLock(settings.keepScreenAwake);
+
+  return (
+    <SettingsContext.Provider value={{ settings, updateSettings, restoreDefaults, showSettings, setShowSettings }}>
+      {children}
+      <AnimatePresence>
+        {showSettings && (
+          <SettingsModal 
+            settings={settings} 
+            onUpdate={updateSettings} 
+            onRestore={restoreDefaults} 
+            onSave={saveSettings}
+            onClose={() => {
+              // Restore from localStorage on close without saving
+              const saved = localStorage.getItem('avalonSettings');
+              if (saved) {
+                setSettings(JSON.parse(saved));
+              } else {
+                setSettings(DEFAULT_SETTINGS);
+              }
+              setShowSettings(false);
+            }}
+          />
+        )}
+      </AnimatePresence>
+    </SettingsContext.Provider>
+  );
+};
+
+const SettingsModal = ({ 
+  settings, 
+  onUpdate, 
+  onRestore, 
+  onSave,
+  onClose 
+}: { 
+  settings: AvalonSettings; 
+  onUpdate: (s: Partial<AvalonSettings>) => void;
+  onRestore: () => void;
+  onSave: () => void;
+  onClose: () => void;
+}) => {
+  const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
+
+  return (
+    <div className="fixed inset-0 z-[200] flex items-end md:items-center justify-center">
+      <motion.div 
+        initial={{ opacity: 0 }} 
+        animate={{ opacity: 1 }} 
+        exit={{ opacity: 0 }}
+        onClick={onClose}
+        className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+      />
+      
+      <motion.div
+        initial={isMobile ? { y: '100%' } : { opacity: 0, scale: 0.9 }}
+        animate={isMobile ? { y: 0 } : { opacity: 1, scale: 1 }}
+        exit={isMobile ? { y: '100%' } : { opacity: 0, scale: 0.9 }}
+        transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+        className={`relative w-full md:max-w-[480px] bg-gradient-to-br from-[#16213e] to-[#1e2d45] border-t-2 md:border-2 border-[#ffd700] shadow-[0_0_50px_rgba(0,0,0,0.5)] flex flex-col ${
+          isMobile ? 'rounded-t-[20px] max-h-[85dvh]' : 'rounded-[15px] max-h-[90vh]'
+        }`}
+      >
+        {/* Handle for mobile */}
+        {isMobile && (
+          <div className="flex justify-center py-3">
+            <div className="w-10 h-1 bg-gray-500/50 rounded-full" />
+          </div>
+        )}
+
+        {/* Header */}
+        <div className="px-6 py-4 flex justify-between items-center border-b border-[#ffd700]/20">
+          <h2 className="text-xl font-['Cinzel'] text-[#ffd700] flex items-center gap-3">
+            <Settings size={24} /> Configurações
+          </h2>
+          {!isMobile && (
+            <button onClick={onClose} className="p-2 hover:bg-white/10 rounded-full transition-colors">
+              <X size={24} className="text-gray-400" />
+            </button>
+          )}
+        </div>
+
+        {/* Content */}
+        <div className="flex-grow overflow-y-auto p-6 space-y-8">
+          {/* Áudio */}
+          <section className="space-y-4">
+            <h3 className="text-xs font-['Cinzel'] text-[#ffd700] tracking-[2px] uppercase border-b border-[#ffd700]/20 pb-2">
+              🎵 Áudio
+            </h3>
+            
+            <div className="bg-[#1e2d45]/40 border border-[#ffd700]/10 rounded-lg p-4 space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="font-['Cinzel'] text-[#ffd700] flex items-center gap-2">
+                  <span>🎵</span> Música de Fundo
+                </div>
+                <button 
+                  onClick={() => onUpdate({ musicEnabled: !settings.musicEnabled })}
+                  className={`w-12 h-6 rounded-full relative transition-all ${settings.musicEnabled ? 'bg-[#4169e1]/40 border border-[#4169e1]' : 'bg-[#dc143c]/10 border border-[#dc143c]'}`}
+                >
+                  <div className={`absolute top-1 w-4 h-4 rounded-full transition-all ${settings.musicEnabled ? 'right-1 bg-[#ffd700]' : 'left-1 bg-gray-500'}`} />
+                </button>
+              </div>
+              <div className="flex items-center gap-4">
+                <input 
+                  type="range" 
+                  min="0" 
+                  max="1" 
+                  step="0.01"
+                  value={settings.musicVolume}
+                  disabled={!settings.musicEnabled}
+                  onChange={(e) => onUpdate({ musicVolume: parseFloat(e.target.value) })}
+                  className="flex-grow accent-[#ffd700] h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                />
+                <span className="text-xs font-mono w-8 text-right">{Math.round(settings.musicVolume * 100)}%</span>
+              </div>
+            </div>
+
+            <div className="bg-[#1e2d45]/40 border border-[#ffd700]/10 rounded-lg p-4 space-y-3">
+              <div className="font-['Cinzel'] text-[#ffd700] flex items-center gap-2">
+                <span>🎙️</span> Volume da Narração
+              </div>
+              <div className="flex items-center gap-4">
+                <input 
+                  type="range" 
+                  min="0.5" 
+                  max="1.5" 
+                  step="0.05"
+                  value={settings.narrationVolume}
+                  onChange={(e) => onUpdate({ narrationVolume: parseFloat(e.target.value) })}
+                  className="flex-grow accent-[#ffd700] h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer"
+                />
+                <span className="text-xs font-mono w-8 text-right">{Math.round(settings.narrationVolume * 100)}%</span>
+              </div>
+            </div>
+
+            <div className="bg-[#1e2d45]/40 border border-[#ffd700]/10 rounded-lg p-4 space-y-3">
+              <div className="font-['Cinzel'] text-[#ffd700] flex items-center gap-2">
+                <span>⏱️</span> Pausa Entre Áudios
+              </div>
+              <div className="flex items-center gap-4">
+                <input 
+                  type="range" 
+                  min="1" 
+                  max="10" 
+                  step="1"
+                  value={settings.pauseDuration}
+                  onChange={(e) => onUpdate({ pauseDuration: parseInt(e.target.value) })}
+                  className="flex-grow accent-[#ffd700] h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer"
+                />
+                <span className="text-xs font-mono w-8 text-right">{settings.pauseDuration}s</span>
+              </div>
+              <p className="text-[10px] text-[#9b7a4f] italic">Tempo que o app aguarda entre cada instrução da narração</p>
+            </div>
+          </section>
+
+          {/* Interface */}
+          <section className="space-y-4">
+            <h3 className="text-xs font-['Cinzel'] text-[#ffd700] tracking-[2px] uppercase border-b border-[#ffd700]/20 pb-2">
+              📱 Interface
+            </h3>
+            
+            <div className="bg-[#1e2d45]/40 border border-[#ffd700]/10 rounded-lg p-4 space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="font-['Cinzel'] text-[#ffd700] flex items-center gap-2">
+                  <span>📱</span> Manter Tela Ativa
+                </div>
+                <button 
+                  disabled={!('wakeLock' in navigator)}
+                  onClick={() => onUpdate({ keepScreenAwake: !settings.keepScreenAwake })}
+                  className={`w-12 h-6 rounded-full relative transition-all ${settings.keepScreenAwake ? 'bg-[#4169e1]/40 border border-[#4169e1]' : 'bg-[#dc143c]/10 border border-[#dc143c]'} disabled:opacity-20`}
+                >
+                  <div className={`absolute top-1 w-4 h-4 rounded-full transition-all ${settings.keepScreenAwake ? 'right-1 bg-[#ffd700]' : 'left-1 bg-gray-500'}`} />
+                </button>
+              </div>
+              <p className="text-[10px] text-[#9b7a4f] italic">Evita que a tela apague durante a narração e o jogo</p>
+            </div>
+
+            <div className="bg-[#1e2d45]/40 border border-[#ffd700]/10 rounded-lg p-4 space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="font-['Cinzel'] text-[#ffd700] flex items-center gap-2">
+                  <span>🚪</span> Confirmar Saída da Sala
+                </div>
+                <button 
+                  onClick={() => onUpdate({ confirmOnLeave: !settings.confirmOnLeave })}
+                  className={`w-12 h-6 rounded-full relative transition-all ${settings.confirmOnLeave ? 'bg-[#4169e1]/40 border border-[#4169e1]' : 'bg-[#dc143c]/10 border border-[#dc143c]'}`}
+                >
+                  <div className={`absolute top-1 w-4 h-4 rounded-full transition-all ${settings.confirmOnLeave ? 'right-1 bg-[#ffd700]' : 'left-1 bg-gray-500'}`} />
+                </button>
+              </div>
+              <p className="text-[10px] text-[#9b7a4f] italic">Pede confirmação antes de sair da sala ou encerrar o jogo</p>
+            </div>
+          </section>
+
+          {/* Sobre */}
+          <section className="space-y-4">
+            <h3 className="text-xs font-['Cinzel'] text-[#ffd700] tracking-[2px] uppercase border-b border-[#ffd700]/20 pb-2">
+              ℹ️ Sobre
+            </h3>
+            <div className="text-center space-y-2">
+              <p className="font-['Cinzel'] text-[#ffd700]">The Resistance: Avalon</p>
+              <p className="text-[10px] text-gray-400">Design original: Don Eskridge</p>
+              <p className="text-[10px] text-gray-500">App versão {APP_VERSION}</p>
+              <p className="text-[10px] text-gray-500">Desenvolvido para uso digital do jogo</p>
+              <div className="pt-4 flex justify-center gap-4 text-xs font-bold text-[#ffd700]">
+                <button onClick={() => { onClose(); /* Trigger Manual */ window.dispatchEvent(new CustomEvent('open-manual')); }} className="hover:underline">📖 Manual</button>
+                <span className="text-gray-700">|</span>
+                <button onClick={() => { onClose(); /* Trigger Guide */ window.dispatchEvent(new CustomEvent('open-guide')); }} className="hover:underline">📋 Guia de Jogo</button>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        {/* Footer */}
+        <div className="p-6 border-t border-[#ffd700]/20 flex gap-3 bg-[#16213e]">
+          <button 
+            onClick={onRestore}
+            className="flex-1 py-3 px-4 rounded-xl border border-[#4a5f7f] text-[#b0b0b0] font-bold text-sm transition-all hover:bg-white/5"
+          >
+            Restaurar Padrões
+          </button>
+          <button 
+            onClick={onSave}
+            className="flex-1 py-3 px-4 rounded-xl bg-gradient-to-br from-[#ffd700] to-[#b8860b] text-[#1a0a2e] font-bold text-sm transition-all active:scale-95"
+          >
+            Salvar e Fechar
+          </button>
+        </div>
+      </motion.div>
+    </div>
+  );
 };
 
 // --- Components ---
@@ -150,9 +540,17 @@ const GameTitle = ({ small = false }: { small?: boolean }) => (
   </div>
 );
 
-const Layout = ({ children, showTitle = true }: { children: ReactNode; showTitle?: boolean }) => (
+const Layout = ({ children, showTitle = true, onSettingsClick }: { children: ReactNode; showTitle?: boolean; onSettingsClick?: () => void }) => (
   <div className="min-h-screen bg-[#0d1b2a] text-white font-['Lato'] selection:bg-[#ffd700] selection:text-[#0d1b2a] pb-12">
     <div className="max-w-md mx-auto px-4 py-8">
+      <div className="flex justify-end mb-4">
+        <button 
+          onClick={onSettingsClick}
+          className="p-2 bg-white/5 rounded-lg hover:bg-white/10 text-[#ffd700] transition-all"
+        >
+          <Settings size={24} />
+        </button>
+      </div>
       {showTitle && <GameTitle small={!window.location.pathname.endsWith('/') && !window.location.pathname.endsWith('/room/')} />}
       {children}
     </div>
@@ -196,8 +594,9 @@ const Card = ({ children, className = '' }: { children: ReactNode; className?: s
   </div>
 );
 
-const Badge = ({ children, team }: { children: ReactNode; team: Team }) => (
+const Badge = ({ children, team, variant }: { children: ReactNode; team?: Team; variant?: 'purple' }) => (
   <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${
+    variant === 'purple' ? 'bg-purple-600 text-white' :
     team === 'good' ? 'bg-[#3498db] text-white' : 'bg-[#c0392b] text-white'
   }`}>
     {children}
@@ -258,6 +657,7 @@ const Home = () => {
   const [roomCode, setRoomCode] = useState('');
   const socket = useSocket();
   const navigate = useNavigate();
+  const { setShowSettings } = useSettings();
 
   const handleCreate = () => {
     if (!name) return alert('Digite seu nome');
@@ -286,7 +686,7 @@ const Home = () => {
   }, [socket, navigate]);
 
   return (
-    <Layout showTitle={false}>
+    <Layout showTitle={false} onSettingsClick={() => setShowSettings(true)}>
       <div className="space-y-12 text-center pt-8">
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -354,6 +754,7 @@ const Room = () => {
   const [room, setRoom] = useState<Room | null>(null);
   const [playerName, setPlayerName] = useState('');
   const [isJoining, setIsJoining] = useState(false);
+  const { settings, setShowSettings } = useSettings();
 
   useEffect(() => {
     const handleRoomUpdate = (updatedRoom: Room) => {
@@ -387,7 +788,7 @@ const Room = () => {
 
   if (!room) {
     return (
-      <Layout>
+      <Layout onSettingsClick={() => setShowSettings(true)}>
         <div className="flex items-center justify-center h-64">
           <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-[#ffd700]"></div>
         </div>
@@ -402,7 +803,7 @@ const Room = () => {
   // Se o usuário NÃO está na sala, mostrar formulário de entrada
   if (!me) {
     return (
-      <Layout>
+      <Layout onSettingsClick={() => setShowSettings(true)}>
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-8 text-center py-12">
           <div className="space-y-4">
             <h2 className="text-sm uppercase tracking-widest text-gray-500 font-bold">Entrar na Sala</h2>
@@ -435,12 +836,15 @@ const Room = () => {
   }
 
   const handleLeave = () => {
+    if (settings.confirmOnLeave) {
+      if (!window.confirm('Tem certeza que deseja sair da sala?')) return;
+    }
     socket.emit('leave-room', { roomCode: code?.toUpperCase(), playerId: getPersistentId() });
     navigate('/');
   };
 
   return (
-    <Layout>
+    <Layout onSettingsClick={() => setShowSettings(true)}>
       <AnimatePresence mode="wait">
         {room.phase === 'lobby' && <LobbyView room={room} isHost={isHost} onLeave={handleLeave} />}
         {room.phase === 'character-reveal' && <CharacterRevealView room={room} me={me} />}
@@ -760,6 +1164,7 @@ const LancelotModal = ({
 
 const LobbyView = ({ room, isHost, onLeave }: { room: Room; isHost: boolean; onLeave: () => void }) => {
   const socket = useSocket();
+  const { showSettings } = useSettings();
   const [selectedRoles, setSelectedRoles] = useState<string[]>([]);
   const [lancelotConfigId, setLancelotConfigId] = useState<string>('none');
   const [ladyOfLakeEnabled, setLadyOfLakeEnabled] = useState(false);
@@ -767,6 +1172,20 @@ const LobbyView = ({ room, isHost, onLeave }: { room: Room; isHost: boolean; onL
   const [targetingEnabled, setTargetingEnabled] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [showLancelotModal, setShowLancelotModal] = useState(false);
+  const [showGuide, setShowGuide] = useState(false);
+  const [showManual, setShowManual] = useState(false);
+  const [showOptionalRules, setShowOptionalRules] = useState(false);
+
+  useEffect(() => {
+    const handleOpenManual = () => setShowManual(true);
+    const handleOpenGuide = () => setShowGuide(true);
+    window.addEventListener('open-manual', handleOpenManual);
+    window.addEventListener('open-guide', handleOpenGuide);
+    return () => {
+      window.removeEventListener('open-manual', handleOpenManual);
+      window.removeEventListener('open-guide', handleOpenGuide);
+    };
+  }, []);
   const playerCount = room.players.length;
   const distribution = TEAM_DISTRIBUTION[playerCount] || { good: 0, evil: 0 };
 
@@ -856,6 +1275,7 @@ const LobbyView = ({ room, isHost, onLeave }: { room: Room; isHost: boolean; onL
         }}
         initialConfig={lancelotConfigId === 'none' ? null : lancelotConfigId}
       />
+      <GameGuide isOpen={showGuide} onClose={() => setShowGuide(false)} />
       <div className="text-center space-y-2">
         <div className="flex justify-between items-center px-4">
           <div className="w-10"></div>
@@ -933,7 +1353,7 @@ const LobbyView = ({ room, isHost, onLeave }: { room: Room; isHost: boolean; onL
         </div>
       </Card>
 
-      {isHost && (
+      {isHost && playerCount >= 5 && (
         <div className="space-y-8">
           <div className="space-y-6">
             {/* Forças do Bem */}
@@ -947,20 +1367,27 @@ const LobbyView = ({ room, isHost, onLeave }: { room: Room; isHost: boolean; onL
               <div className="grid grid-cols-1 gap-3">
                 {/* Mandatory and Generic Good */}
                 <div className="grid grid-cols-2 gap-3">
-                  <div className="p-3 rounded-xl border border-[#ffd700] bg-[#ffd700]/5 flex flex-col justify-between">
+                  <div className="p-3 rounded-xl border border-[#3498db] bg-[#3498db]/10 shadow-[0_0_10px_rgba(52,152,219,0.1)] flex flex-col justify-between">
                     <div>
                       <div className="flex items-center justify-between mb-1">
-                        <span className="font-bold text-sm">🧙‍♂️ Merlin</span>
+                        <span className="font-bold text-sm text-white">🧙‍♂️ Merlin</span>
                         <span className="text-[8px] uppercase bg-[#ffd700] text-[#0d1b2a] px-1 rounded font-bold">Obrigatório</span>
                       </div>
                       <p className="text-[10px] text-gray-400 leading-tight">Conhece os servos do mal</p>
                     </div>
                   </div>
                   
-                  <div className="p-3 rounded-xl border border-white/10 bg-white/5 flex flex-col justify-between">
+                  {/* Servos de Arthur */}
+                  <div className={`p-3 rounded-xl border transition-all flex flex-col justify-between ${
+                    (goodSlots - 1 - selectedGood.length) > 0 
+                      ? 'border-[#3498db] bg-[#3498db]/10 shadow-[0_0_10px_rgba(52,152,219,0.1)]' 
+                      : 'border-white/10 bg-white/5 opacity-60 grayscale'
+                  }`}>
                     <div>
                       <div className="flex items-center justify-between mb-1">
-                        <span className="font-bold text-sm">🛡️ {goodSlots - 1 - selectedGood.length} Servos de Arthur</span>
+                        <span className="font-bold text-sm text-white">
+                          🛡️ <span className={(goodSlots - 1 - selectedGood.length) > 0 ? 'text-[#ffd700]' : ''}>{goodSlots - 1 - selectedGood.length}</span> {goodSlots - 1 - selectedGood.length === 1 ? 'Servo' : 'Servos'} de Arthur
+                        </span>
                       </div>
                       <p className="text-[10px] text-gray-400 leading-tight">Preenchem vagas restantes</p>
                     </div>
@@ -986,7 +1413,7 @@ const LobbyView = ({ room, isHost, onLeave }: { room: Room; isHost: boolean; onL
                         }}
                         className={`p-3 rounded-xl border transition-all text-left flex flex-col gap-1 cursor-pointer ${
                           isSelected 
-                            ? 'border-[#ffd700] bg-[#ffd700]/10 shadow-[0_0_10px_rgba(255,215,0,0.1)]' 
+                            ? 'border-[#3498db] bg-[#3498db]/10 shadow-[0_0_10px_rgba(52,152,219,0.1)]' 
                             : 'border-white/10 bg-white/5 opacity-60'
                         } ${disabled ? 'opacity-20 grayscale cursor-not-allowed' : ''}`}
                       >
@@ -1033,16 +1460,23 @@ const LobbyView = ({ room, isHost, onLeave }: { room: Room; isHost: boolean; onL
                     <div>
                       <div className="flex items-center justify-between mb-1">
                         <span className="font-bold text-sm">💀 Assassino</span>
-                        <span className="text-[8px] uppercase bg-red-500 text-white px-1 rounded font-bold">Obrigatório</span>
+                        <span className="text-[8px] uppercase bg-[#ffd700] text-[#0d1b2a] px-1 rounded font-bold">Obrigatório</span>
                       </div>
                       <p className="text-[10px] text-gray-400 leading-tight">Tenta identificar Merlin</p>
                     </div>
                   </div>
                   
-                  <div className="p-3 rounded-xl border border-white/10 bg-white/5 flex flex-col justify-between">
+                  {/* Minions de Mordred */}
+                  <div className={`p-3 rounded-xl border transition-all flex flex-col justify-between ${
+                    (evilSlots - 1 - selectedEvil.length) > 0 
+                      ? 'border-[#c0392b] bg-[#c0392b]/10 shadow-[0_0_10px_rgba(192,57,43,0.1)]' 
+                      : 'border-white/10 bg-white/5 opacity-60 grayscale'
+                  }`}>
                     <div>
                       <div className="flex items-center justify-between mb-1">
-                        <span className="font-bold text-sm">🗡️ {evilSlots - 1 - selectedEvil.length} Minions de Mordred</span>
+                        <span className="font-bold text-sm text-white">
+                          🗡️ <span className={(evilSlots - 1 - selectedEvil.length) > 0 ? 'text-[#ffd700]' : ''}>{evilSlots - 1 - selectedEvil.length}</span> {evilSlots - 1 - selectedEvil.length === 1 ? 'Minion' : 'Minions'} de Mordred
+                        </span>
                       </div>
                       <p className="text-[10px] text-gray-400 leading-tight">Preenchem vagas restantes</p>
                     </div>
@@ -1080,7 +1514,7 @@ const LobbyView = ({ room, isHost, onLeave }: { room: Room; isHost: boolean; onL
                           {roleId === 'lancelot_evil' && isSelected && (
                             <button 
                               onClick={(e) => { e.stopPropagation(); setShowLancelotModal(true); }}
-                              className="p-1 hover:bg-white/10 rounded text-red-400"
+                              className="p-1 hover:bg-white/10 rounded text-[#ffd700]"
                             >
                               <Sword size={12} />
                             </button>
@@ -1088,8 +1522,8 @@ const LobbyView = ({ room, isHost, onLeave }: { room: Room; isHost: boolean; onL
                         </div>
                         <p className="text-[9px] text-gray-400 leading-tight h-6 overflow-hidden">{ROLES[roleId].description}</p>
                         {roleId === 'lancelot_evil' && isSelected && (
-                          <div className="mt-1 text-[8px] text-red-400 font-bold uppercase tracking-tighter flex items-center gap-1">
-                            <div className="w-1 h-1 rounded-full bg-red-400" />
+                          <div className="mt-1 text-[8px] text-[#ffd700] font-bold uppercase tracking-tighter flex items-center gap-1">
+                            <div className="w-1 h-1 rounded-full bg-[#ffd700]" />
                             {lancelotConfigId === 'none' ? 'Configurar' : lancelotConfigId.toUpperCase().replace('_', ' + ')}
                           </div>
                         )}
@@ -1103,72 +1537,99 @@ const LobbyView = ({ room, isHost, onLeave }: { room: Room; isHost: boolean; onL
 
           <div className="space-y-6">
             {/* Regras Opcionais */}
-            <div className="space-y-4">
-              <h3 className="text-xs uppercase tracking-widest text-gray-500 font-bold ml-2">Regras Opcionais</h3>
-              <div className="space-y-3">
-                {/* Lady of the Lake */}
-                <button 
-                  onClick={() => setLadyOfLakeEnabled(!ladyOfLakeEnabled)}
-                  className={`w-full p-4 rounded-xl border-2 transition-all flex items-center gap-4 ${
-                    ladyOfLakeEnabled ? 'border-[#ffd700] bg-[#ffd700]/10' : 'border-white/5 bg-[#1b263b] opacity-60'
-                  }`}
-                >
-                  <div className={`p-2 rounded-lg ${ladyOfLakeEnabled ? 'bg-[#ffd700]/20 text-[#ffd700]' : 'bg-white/5 text-gray-500'}`}>
-                    <Droplets size={24} />
-                  </div>
-                  <div className="text-left flex-1">
-                    <span className="font-['Cinzel'] font-bold text-sm block">Dama do Lago</span>
-                    <p className="text-[10px] text-gray-400">Permite investigar a lealdade de outros jogadores.</p>
-                  </div>
-                  {ladyOfLakeEnabled && <CheckCircle2 size={16} className="text-[#ffd700]" />}
-                </button>
+            <div className="space-y-2">
+              <button 
+                onClick={() => setShowOptionalRules(!showOptionalRules)}
+                className="w-full flex items-center justify-between p-2 hover:bg-white/5 rounded-lg transition-colors group"
+              >
+                <h3 className="text-xs uppercase tracking-widest text-gray-500 font-bold ml-2 group-hover:text-gray-300 transition-colors">Regras Opcionais</h3>
+                <div className="flex items-center gap-2">
+                  {!showOptionalRules && (ladyOfLakeEnabled || excaliburEnabled || targetingEnabled) && (
+                    <span className="text-[10px] bg-[#ffd700]/20 text-[#ffd700] px-2 py-0.5 rounded-full font-bold">
+                      {(ladyOfLakeEnabled ? 1 : 0) + (excaliburEnabled ? 1 : 0) + (targetingEnabled ? 1 : 0)} Ativas
+                    </span>
+                  )}
+                  {showOptionalRules ? <ChevronUp size={16} className="text-gray-500" /> : <ChevronDown size={16} className="text-gray-500" />}
+                </div>
+              </button>
+              
+              <AnimatePresence>
+                {showOptionalRules && (
+                  <motion.div 
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    className="overflow-hidden space-y-3 px-2 pb-2"
+                  >
+                    {/* Lady of the Lake */}
+                    <button 
+                      onClick={() => setLadyOfLakeEnabled(!ladyOfLakeEnabled)}
+                      className={`w-full p-4 rounded-xl border-2 transition-all flex items-center gap-4 ${
+                        ladyOfLakeEnabled ? 'border-[#ffd700] bg-[#ffd700]/10' : 'border-white/5 bg-[#1b263b] opacity-60'
+                      }`}
+                    >
+                      <div className={`p-2 rounded-lg ${ladyOfLakeEnabled ? 'bg-[#ffd700]/20 text-[#ffd700]' : 'bg-white/5 text-gray-500'}`}>
+                        <Droplets size={24} />
+                      </div>
+                      <div className="text-left flex-1">
+                        <span className="font-['Cinzel'] font-bold text-sm block">Dama do Lago</span>
+                        <p className="text-[10px] text-gray-400">Permite investigar a lealdade de outros jogadores.</p>
+                      </div>
+                      {ladyOfLakeEnabled && <CheckCircle2 size={16} className="text-[#ffd700]" />}
+                    </button>
 
-                {/* Excalibur */}
-                <button 
-                  onClick={() => setExcaliburEnabled(!excaliburEnabled)}
-                  className={`w-full p-4 rounded-xl border-2 transition-all flex items-center gap-4 ${
-                    excaliburEnabled ? 'border-[#ffd700] bg-[#ffd700]/10' : 'border-white/5 bg-[#1b263b] opacity-60'
-                  }`}
-                >
-                  <div className={`p-2 rounded-lg ${excaliburEnabled ? 'bg-[#ffd700]/20 text-[#ffd700]' : 'bg-white/5 text-gray-500'}`}>
-                    <Sword size={24} />
-                  </div>
-                  <div className="text-left flex-1">
-                    <span className="font-['Cinzel'] font-bold text-sm block">Excalibur</span>
-                    <p className="text-[10px] text-gray-400">Permite forçar a troca de uma carta de missão.</p>
-                  </div>
-                  {excaliburEnabled && <CheckCircle2 size={16} className="text-[#ffd700]" />}
-                </button>
+                    {/* Excalibur */}
+                    <button 
+                      onClick={() => setExcaliburEnabled(!excaliburEnabled)}
+                      className={`w-full p-4 rounded-xl border-2 transition-all flex items-center gap-4 ${
+                        excaliburEnabled ? 'border-[#ffd700] bg-[#ffd700]/10' : 'border-white/5 bg-[#1b263b] opacity-60'
+                      }`}
+                    >
+                      <div className={`p-2 rounded-lg ${excaliburEnabled ? 'bg-[#ffd700]/20 text-[#ffd700]' : 'bg-white/5 text-gray-500'}`}>
+                        <Sword size={24} />
+                      </div>
+                      <div className="text-left flex-1">
+                        <span className="font-['Cinzel'] font-bold text-sm block">Excalibur</span>
+                        <p className="text-[10px] text-gray-400">Permite forçar a troca de uma carta de missão.</p>
+                      </div>
+                      {excaliburEnabled && <CheckCircle2 size={16} className="text-[#ffd700]" />}
+                    </button>
 
-                {/* Targeting (Missão Alvo) */}
-                <button 
-                  onClick={() => setTargetingEnabled(!targetingEnabled)}
-                  className={`w-full p-4 rounded-xl border-2 transition-all flex items-center gap-4 ${
-                    targetingEnabled ? 'border-[#ffd700] bg-[#ffd700]/10' : 'border-white/5 bg-[#1b263b] opacity-60'
-                  }`}
-                >
-                  <div className={`p-2 rounded-lg ${targetingEnabled ? 'bg-[#ffd700]/20 text-[#ffd700]' : 'bg-white/5 text-gray-500'}`}>
-                    <Target size={24} />
-                  </div>
-                  <div className="text-left flex-1">
-                    <span className="font-['Cinzel'] font-bold text-sm block">Missão Alvo</span>
-                    <p className="text-[10px] text-gray-400">Permite escolher a ordem das missões.</p>
-                  </div>
-                  {targetingEnabled && <CheckCircle2 size={16} className="text-[#ffd700]" />}
-                </button>
-              </div>
+                    {/* Targeting (Missão Alvo) */}
+                    <button 
+                      onClick={() => setTargetingEnabled(!targetingEnabled)}
+                      className={`w-full p-4 rounded-xl border-2 transition-all flex items-center gap-4 ${
+                        targetingEnabled ? 'border-[#ffd700] bg-[#ffd700]/10' : 'border-white/5 bg-[#1b263b] opacity-60'
+                      }`}
+                    >
+                      <div className={`p-2 rounded-lg ${targetingEnabled ? 'bg-[#ffd700]/20 text-[#ffd700]' : 'bg-white/5 text-gray-500'}`}>
+                        <Target size={24} />
+                      </div>
+                      <div className="text-left flex-1">
+                        <span className="font-['Cinzel'] font-bold text-sm block">Missão Alvo</span>
+                        <p className="text-[10px] text-gray-400">Permite escolher a ordem das missões.</p>
+                      </div>
+                      {targetingEnabled && <CheckCircle2 size={16} className="text-[#ffd700]" />}
+                    </button>
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
           </div>
 
-          <Button onClick={handleStart} disabled={playerCount < 5} className="shadow-[0_0_20px_rgba(255,215,0,0.2)]">
+          <Button onClick={handleStart} className="shadow-[0_0_20px_rgba(255,215,0,0.2)]">
             Sortear Personagens
           </Button>
         </div>
       )}
 
-      {!isHost && (
+      {(playerCount < 5 || !isHost) && (
         <div className="text-center p-8 border-2 border-dashed border-white/10 rounded-2xl">
-          <p className="text-gray-400 italic">Aguardando o host iniciar a partida...</p>
+          <p className="text-gray-400 italic">
+            {playerCount < 5 
+              ? "Aguardando mais jogadores (mínimo 5) para configurar a partida..." 
+              : "Aguardando o host iniciar a partida..."}
+          </p>
         </div>
       )}
 
@@ -1179,6 +1640,27 @@ const LobbyView = ({ room, isHost, onLeave }: { room: Room; isHost: boolean; onL
         <LogOut size={16} />
         Sair da Sala
       </button>
+
+      <div className="fixed bottom-6 right-6 z-50 flex flex-col sm:flex-row gap-3">
+        <button 
+          onClick={() => setShowManual(true)}
+          className="p-4 rounded-full bg-[#0d1b2a]/80 backdrop-blur-md border border-[#ffd700] text-[#ffd700] shadow-[0_0_15px_rgba(255,215,0,0.2)] hover:scale-110 transition-all flex items-center gap-2 font-bold text-sm font-['Cinzel']"
+        >
+          <Book size={20} />
+          <span className="hidden sm:inline">Manual</span>
+        </button>
+
+        <button 
+          onClick={() => setShowGuide(true)}
+          className="p-4 rounded-full bg-[#0d1b2a]/80 backdrop-blur-md border border-[#ffd700] text-[#ffd700] shadow-[0_0_15px_rgba(255,215,0,0.2)] hover:scale-110 transition-all flex items-center gap-2 font-bold text-sm font-['Cinzel']"
+        >
+          <MapPinned size={20} />
+          <span className="hidden sm:inline">Guia</span>
+        </button>
+      </div>
+
+      <GameGuide isOpen={showGuide} onClose={() => setShowGuide(false)} />
+      <GameManual isOpen={showManual} onClose={() => setShowManual(false)} />
     </motion.div>
   );
 };
@@ -1189,10 +1671,6 @@ const CharacterRevealView = ({ room, me }: { room: Room; me?: Player }) => {
   const role = me?.role ? ROLES[me.role] : null;
 
   if (!role) return null;
-
-  const otherLancelot = room.lancelotConfig?.id?.includes('var3') && me?.role?.includes('lancelot')
-    ? room.players.find(p => p.role?.includes('lancelot') && p.id !== me.id)
-    : null;
 
   return (
     <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="space-y-8 text-center">
@@ -1206,13 +1684,6 @@ const CharacterRevealView = ({ room, me }: { room: Room; me?: Player }) => {
             <h3 className="text-4xl font-['Cinzel'] font-bold">{role.name}</h3>
           </div>
           <p className="text-gray-300 px-4">{role.description}</p>
-
-          {otherLancelot && (
-            <div className="mt-4 p-3 bg-white/5 rounded-xl border border-[#ffd700]/30">
-              <p className="text-[10px] uppercase tracking-widest text-[#ffd700] mb-1">Reconhecimento Mútuo</p>
-              <p className="text-sm font-bold">O outro Lancelot é: {otherLancelot.name}</p>
-            </div>
-          )}
         </div>
 
         {!revealed && (
@@ -1236,17 +1707,51 @@ const CharacterRevealView = ({ room, me }: { room: Room; me?: Player }) => {
 
 const NarrationView = ({ room, isHost }: { room: Room; isHost: boolean }) => {
   const socket = useSocket();
+  const { settings, showSettings } = useSettings();
   const [step, setStep] = useState(0);
-  const sequence = getNarrationSequence(room.selectedRoles);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    if (showSettings) {
+      if (audioRef.current && !audioRef.current.paused) {
+        audioRef.current.pause();
+        setIsPaused(true);
+      }
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+      }
+    }
+  }, [showSettings]);
+
+  const roles: Roles = {
+    merlin: true,
+    assassin: true,
+    percival: room.selectedRoles.includes('percival'),
+    morgana: room.selectedRoles.includes('morgana'),
+    mordred: room.selectedRoles.includes('mordred'),
+    oberon: room.selectedRoles.includes('oberon'),
+    lancelotGood: room.selectedRoles.includes('lancelot_good'),
+    lancelotEvil: room.selectedRoles.includes('lancelot_evil'),
+  };
+
+  const sequence = generateNarrationSequence(roles, room.lancelotConfig, room.players.length);
   
   const narrationTexts: Record<string, string> = {
     '1': 'Bem-vindos ao Avalon...',
     '2': 'Todos fechem os olhos...',
     '3': 'Servos do Mal, levantem o polegar',
+    '3-lancelot': 'Servos do Mal, levantem o polegar',
     '4': 'Servos do Mal, abram os olhos e conheçam seus companheiros',
     '4-oberon': 'Servos do Mal, exceto Oberon, abram os olhos...',
+    '4-lancelot': 'Servos do Mal, abram os olhos e conheçam seus companheiros',
+    '4-oberon-lancelot': 'Servos do Mal, exceto Oberon, abram os olhos...',
     '5': 'Servos do Mal, fechem os olhos',
     '5-mordred': 'Servos do Mal, fechem os olhos. Mordred, abaixe seu polegar',
+    '5-lancelot': 'Servos do Mal, fechem os olhos',
+    '5-mordred-lancelot': 'Servos do Mal, fechem os olhos. Mordred, abaixe seu polegar',
     '6': 'Merlin, abra os olhos e veja os servos do mal',
     '7': 'Servos do Mal, abaixem seus polegares. Merlin, feche os olhos',
     '8': 'Merlin, levante o polegar',
@@ -1260,13 +1765,101 @@ const NarrationView = ({ room, isHost }: { room: Room; isHost: boolean }) => {
     '14': 'Que comecem as missões de Avalon! Boa sorte, cavaleiros e servos'
   };
 
-  useEffect(() => {
-    if (isHost && step === sequence.length) {
-      setTimeout(() => {
+  const playStep = (index: number) => {
+    if (index >= sequence.length) {
+      if (isHost) {
         socket.emit('narration-ended', { roomCode: room.code });
-      }, 2000);
+      }
+      return;
     }
-  }, [step, isHost, room.code, socket, sequence.length]);
+
+    setStep(index);
+    const audioFile = sequence[index];
+    const audio = new Audio(`/src/assets/audios/${audioFile}.mp3`);
+    audio.volume = settings.narrationVolume;
+    audioRef.current = audio;
+
+    audio.onended = () => {
+      if (shouldPauseAfter(audioFile)) {
+        timerRef.current = setTimeout(() => {
+          playStep(index + 1);
+        }, settings.pauseDuration * 1000);
+      } else {
+        playStep(index + 1);
+      }
+    };
+
+    audio.play().catch(e => console.error("Erro ao tocar áudio:", e));
+  };
+
+  const togglePlay = () => {
+    if (!isPlaying) {
+      setIsPlaying(true);
+      playStep(step);
+    } else {
+      if (isPaused) {
+        audioRef.current?.play();
+        setIsPaused(false);
+      } else {
+        audioRef.current?.pause();
+        setIsPaused(true);
+      }
+    }
+  };
+
+  const restart = () => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+    }
+    setStep(0);
+    setIsPlaying(false);
+    setIsPaused(false);
+  };
+
+  const skip = () => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+    }
+    if (step + 1 < sequence.length) {
+      playStep(step + 1);
+    } else {
+      if (isHost) {
+        socket.emit('narration-ended', { roomCode: room.code });
+      }
+    }
+  };
+
+  const skipAll = () => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+    }
+    if (isHost) {
+      socket.emit('narration-ended', { roomCode: room.code });
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+      }
+    };
+  }, []);
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-12 text-center py-12">
@@ -1279,16 +1872,29 @@ const NarrationView = ({ room, isHost }: { room: Room; isHost: boolean }) => {
         {isHost ? (
           <div className="space-y-8">
             <p className="text-2xl font-bold italic">"{narrationTexts[sequence[step]] || '...'}"</p>
-            <div className="flex justify-center gap-4">
-              <Button variant="secondary" onClick={() => setStep(s => Math.max(0, s - 1))} className="w-auto px-4"><SkipBack /></Button>
-              <Button onClick={() => setStep(s => Math.min(sequence.length, s + 1))} className="w-auto px-8">
-                {step === sequence.length - 1 ? 'Finalizar' : 'Próximo'}
-              </Button>
+            <div className="flex flex-col gap-6 items-center">
+              <div className="flex justify-center gap-4">
+                <Button variant="secondary" onClick={restart} className="w-auto px-4"><RotateCcw size={20} /></Button>
+                <Button onClick={togglePlay} className="w-auto px-8">
+                  {!isPlaying ? 'Iniciar Narração' : (isPaused ? <Play /> : <Pause />)}
+                </Button>
+                <Button variant="secondary" onClick={skip} className="w-auto px-4" disabled={!isPlaying}><SkipForward size={20} /></Button>
+              </div>
+              
+              {!isPlaying && (
+                <button 
+                  onClick={skipAll}
+                  className="text-gray-500 hover:text-white text-[10px] uppercase tracking-[0.2em] font-black transition-colors flex items-center gap-2"
+                >
+                  <VolumeX size={14} />
+                  Pular Narração Completa
+                </button>
+              )}
             </div>
             <p className="text-xs text-gray-500 uppercase font-bold tracking-widest">Passo {step + 1} de {sequence.length}</p>
             <div className="flex items-center justify-center gap-2 text-xs text-gray-500">
               <Volume2 size={16} />
-              <span>Tocando: {sequence[step]}.mp3</span>
+              <span>{isPlaying ? `Tocando: ${sequence[step]}.mp3` : 'Pronto para iniciar'}</span>
             </div>
           </div>
         ) : (
@@ -1311,8 +1917,113 @@ const NarrationView = ({ room, isHost }: { room: Room; isHost: boolean }) => {
   );
 };
 
+const KnowledgeSection = ({ room, me }: { room: Room; me: Player }) => {
+  const role = ROLES[me.role!];
+  if (!role) return null;
+
+  const knowledge: { name: string; info: string; icon: string; team?: Team; isMerlin?: boolean }[] = [];
+
+  // 1. Lancelots (Var 3)
+  const isVar3 = room.lancelotConfig?.variant?.includes('var3');
+  if (isVar3 && me.role?.includes('lancelot')) {
+    const otherLancelot = room.players.find(p => p.role?.includes('lancelot') && p.id !== me.id);
+    if (otherLancelot) {
+      const otherRole = ROLES[otherLancelot.role!];
+      knowledge.push({
+        name: otherLancelot.name,
+        info: 'Lancelot',
+        icon: '⚔️',
+        team: otherRole.team
+      });
+    }
+  }
+
+  // 2. Evil Team (except Oberon)
+  const isEvil = role.team === 'evil';
+  const isOberon = me.role === 'oberon';
+  const isLancelotEvil = me.role === 'lancelot_evil';
+
+  if (isEvil && !isOberon && !isLancelotEvil) {
+    const otherEvil = room.players.filter(p => {
+      if (p.id === me.id) return false;
+      const otherRole = ROLES[p.role!];
+      return otherRole.team === 'evil' && p.role !== 'oberon';
+    });
+    otherEvil.forEach(p => {
+      knowledge.push({
+        name: p.name,
+        info: 'Mal',
+        icon: '🗡️',
+        team: 'evil'
+      });
+    });
+  }
+
+  // 3. Merlin
+  if (me.role === 'merlin') {
+    const evilPlayers = room.players.filter(p => {
+      if (p.id === me.id) return false;
+      const otherRole = ROLES[p.role!];
+      // Merlin sees all evil except Mordred
+      return otherRole.team === 'evil' && p.role !== 'mordred';
+    });
+    evilPlayers.forEach(p => {
+      knowledge.push({
+        name: p.name,
+        info: 'Mal',
+        icon: '💀',
+        team: 'evil'
+      });
+    });
+  }
+
+  // 4. Percival
+  if (me.role === 'percival') {
+    const merlinOrMorgana = room.players.filter(p => {
+      return p.role === 'merlin' || p.role === 'morgana';
+    });
+    merlinOrMorgana.forEach(p => {
+      knowledge.push({
+        name: p.name,
+        info: 'Merlin?',
+        icon: '🧙‍♂️',
+        isMerlin: true
+      });
+    });
+  }
+
+  if (knowledge.length === 0) return null;
+
+  return (
+    <div className="space-y-3 mt-4 pt-4 border-t border-white/10">
+      <h3 className="text-[10px] uppercase tracking-widest text-gray-500 font-bold">Conhecimento Adquirido</h3>
+      <div className="grid grid-cols-1 gap-2">
+        {knowledge.map((k, i) => (
+          <div key={i} className="flex items-center justify-between p-2 bg-black/20 rounded-lg border border-white/5">
+            <div className="flex items-center gap-3">
+              <span className="text-xl">{k.icon}</span>
+              <p className="text-xs font-bold text-white">{k.name}</p>
+            </div>
+            <div className="flex gap-1 items-center">
+              {k.isMerlin ? (
+                <Badge variant="purple">Merlin?</Badge>
+              ) : (
+                <>
+                  {k.info === 'Lancelot' && <span className="text-[10px] text-gray-400 font-bold mr-1">Lancelot</span>}
+                  <Badge team={k.team}>{k.team === 'good' ? 'BEM' : 'MAL'}</Badge>
+                </>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
 const GameView = ({ room, me, isHost, onLeave }: { room: Room; me?: Player; isHost: boolean; onLeave: () => void }) => {
   const socket = useSocket();
+  const { showSettings } = useSettings();
   const playerId = sessionStorage.getItem('avalon_player_id');
   const currentMission = room.missions[room.currentMissionIndex];
   const leader = room.players[room.currentLeaderIndex];
@@ -1320,11 +2031,16 @@ const GameView = ({ room, me, isHost, onLeave }: { room: Room; me?: Player; isHo
   const [selectedTeam, setSelectedTeam] = useState<string[]>([]);
   const [targetMissionIndex, setTargetMissionIndex] = useState<number | null>(null);
   const [ladyResult, setLadyResult] = useState<{ targetName: string; loyalty: 'good' | 'evil' } | null>(null);
+  const [showSecrets, setShowSecrets] = useState(false);
 
   const isLancelot = me?.role?.includes('lancelot');
   const currentTeam = (me?.role && room.lancelotLoyalty && isLancelot)
     ? (me.role === 'lancelot_good' ? room.lancelotLoyalty.lancelotGoodTeam : room.lancelotLoyalty.lancelotEvilTeam)
     : (me?.role ? ROLES[me.role].team : 'good');
+
+  useEffect(() => {
+    setShowSecrets(false);
+  }, [room.phase, room.currentMissionIndex, room.currentLeaderIndex]);
 
   useEffect(() => {
     const handleLadyResult = ({ holderPlayerId, targetPlayerId, loyalty }: any) => {
@@ -1419,7 +2135,7 @@ const GameView = ({ room, me, isHost, onLeave }: { room: Room; me?: Player; isHo
       </div>
 
       {/* Lancelot Loyalty Deck */}
-      {room.lancelotConfig && room.phase !== 'game-over' && (
+      {room.lancelotConfig && room.lancelotConfig.variant !== 'var3' && room.phase !== 'game-over' && (
         <div className="bg-purple-500/5 border border-purple-500/20 rounded-2xl p-4 space-y-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
@@ -1939,26 +2655,54 @@ const GameView = ({ room, me, isHost, onLeave }: { room: Room; me?: Player; isHo
 
       {/* Footer Player Info */}
       {me?.role && room.phase !== 'game-over' && (
-        <div className="mt-8 max-w-md mx-auto">
-          <div className="bg-[#1b263b] border border-[#ffd700]/30 rounded-xl p-3 flex items-center justify-between shadow-2xl">
-            <div className="flex items-center gap-3">
-              <span className="text-2xl">{ROLES[me.role].icon}</span>
-              <div>
-                <p className="text-[10px] uppercase font-bold text-gray-500">Seu Personagem</p>
-                <p className="font-bold text-[#ffd700]">{ROLES[me.role].name}</p>
-              </div>
-            </div>
-            <Badge team={ROLES[me.role].team}>{ROLES[me.role].team === 'good' ? 'BEM' : 'MAL'}</Badge>
+        <div className="mt-8 max-w-md mx-auto space-y-4">
+          <div className="flex justify-center">
+            <button
+              onClick={() => setShowSecrets(!showSecrets)}
+              className={`flex items-center gap-2 px-4 py-2 rounded-full border-2 transition-all font-black uppercase tracking-widest text-[10px] ${
+                showSecrets 
+                  ? 'bg-[#ffd700] text-[#0d1b2a] border-[#ffd700]' 
+                  : 'bg-white/5 text-gray-400 border-white/10 hover:border-white/30'
+              }`}
+            >
+              {showSecrets ? <><EyeOff size={14} /> Ocultar Segredos</> : <><Eye size={14} /> Ver Segredos</>}
+            </button>
           </div>
-          
-          {me.role.includes('lancelot') && room.lancelotLoyalty && (
-            <div className="mt-2 bg-purple-500/20 border border-purple-500/40 rounded-xl p-2 text-center">
-              <p className="text-[9px] uppercase font-bold text-purple-300 tracking-widest">Sua Lealdade Atual</p>
-              <p className="text-sm font-black text-white">
-                {me.role === 'lancelot_good' ? room.lancelotLoyalty.lancelotGoodTeam.toUpperCase() : room.lancelotLoyalty.lancelotEvilTeam.toUpperCase()}
-              </p>
-            </div>
-          )}
+
+          <AnimatePresence>
+            {showSecrets && (
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 20 }}
+                className="space-y-4"
+              >
+                <div className="bg-[#1b263b] border border-[#ffd700]/30 rounded-xl p-4 shadow-2xl">
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-3">
+                      <span className="text-3xl">{ROLES[me.role].icon}</span>
+                      <div>
+                        <p className="text-[10px] uppercase font-bold text-gray-500">Seu Personagem</p>
+                        <p className="font-bold text-[#ffd700] text-lg">{ROLES[me.role].name}</p>
+                      </div>
+                    </div>
+                    <Badge team={ROLES[me.role].team}>{ROLES[me.role].team === 'good' ? 'BEM' : 'MAL'}</Badge>
+                  </div>
+                  
+                  {me.role.includes('lancelot') && room.lancelotLoyalty && room.lancelotConfig?.variant !== 'var3' && (
+                    <div className="bg-purple-500/20 border border-purple-500/40 rounded-xl p-2 text-center mb-4">
+                      <p className="text-[9px] uppercase font-bold text-purple-300 tracking-widest">Sua Lealdade Atual</p>
+                      <p className="text-sm font-black text-white">
+                        {me.role === 'lancelot_good' ? room.lancelotLoyalty.lancelotGoodTeam.toUpperCase() : room.lancelotLoyalty.lancelotEvilTeam.toUpperCase()}
+                      </p>
+                    </div>
+                  )}
+
+                  <KnowledgeSection room={room} me={me} />
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       )}
     </motion.div>
@@ -1982,13 +2726,15 @@ export default function App() {
 
   return (
     <SocketContext.Provider value={socket}>
-      <Router>
-        <Routes>
-          <Route path="/" element={<Home />} />
-          <Route path="/room/:code" element={<Room />} />
-          <Route path="*" element={<Home />} />
-        </Routes>
-      </Router>
+      <SettingsProvider>
+        <Router>
+          <Routes>
+            <Route path="/" element={<Home />} />
+            <Route path="/room/:code" element={<Room />} />
+            <Route path="*" element={<Home />} />
+          </Routes>
+        </Router>
+      </SettingsProvider>
     </SocketContext.Provider>
   );
 }
