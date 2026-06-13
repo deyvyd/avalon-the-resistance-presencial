@@ -6,7 +6,9 @@ Web app to run in-person Avalon sessions. Handles role assignment, automated aud
 - 🇧🇷 [jogos.deyvyd.com/avalon](https://jogos.deyvyd.com/avalon) — Portuguese
 - 🇺🇸 [games.deyvyd.com/avalon](https://games.deyvyd.com/avalon) — English
 
-![Avalon App](public/screenshot.png)
+<div align="center">
+  <img src="public/screenshot.png" alt="Avalon App" />
+</div>
 
 Language detected automatically from subdomain (`games.*` → EN, otherwise → PT).
 
