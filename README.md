@@ -2,8 +2,9 @@
 
 App para conduzir partidas presenciais de Avalon. Narração automática com áudio, distribuição de papéis, QR code para entrada na sala e guia de regras integrado.
 
-- 🇧🇷 **PT:** `jogos.deyvyd.com/avalon`
-- 🇺🇸 **EN:** `games.deyvyd.com/avalon`
+**Live:**
+- 🇧🇷 [jogos.deyvyd.com/avalon](https://jogos.deyvyd.com/avalon) — Português
+- 🇺🇸 [games.deyvyd.com/avalon](https://games.deyvyd.com/avalon) — English
 
 Idioma detectado automaticamente pelo subdomínio (`games.*` → EN, qualquer outro → PT).
 
