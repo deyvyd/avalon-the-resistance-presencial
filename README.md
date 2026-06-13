@@ -1,68 +1,65 @@
-# Avalon: The Resistance — Presencial
+# Avalon: The Resistance — In-Person
 
-App para conduzir partidas presenciais de Avalon. Narração automática com áudio, distribuição de papéis, QR code para entrada na sala e guia de regras integrado.
+Web app to run in-person Avalon sessions. Handles role assignment, automated audio narration, QR code room joining, and an integrated rules guide.
 
 **Live:**
-- 🇧🇷 [jogos.deyvyd.com/avalon](https://jogos.deyvyd.com/avalon) — Português
+- 🇧🇷 [jogos.deyvyd.com/avalon](https://jogos.deyvyd.com/avalon) — Portuguese
 - 🇺🇸 [games.deyvyd.com/avalon](https://games.deyvyd.com/avalon) — English
 
-Idioma detectado automaticamente pelo subdomínio (`games.*` → EN, qualquer outro → PT).
+Language detected automatically from subdomain (`games.*` → EN, otherwise → PT).
 
 ## Stack
 
 - React 19 + TypeScript + Vite
 - Tailwind CSS 4
-- Socket.io (WebSocket para sync de sala em tempo real)
-- react-i18next + i18next (internacionalização)
-- Render (hospedagem)
+- Socket.io (real-time WebSocket room sync)
+- react-i18next + i18next (i18n)
+- Render (hosting)
 
-## Rodar localmente
+## Run locally
 
-**Pré-requisitos:** Node.js ≥ 20
+**Prerequisites:** Node.js ≥ 20
 
 ```bash
 npm install
-```
-
-```bash
 npm run dev
 ```
 
-Abre em `http://localhost:3000`.
+Opens at `http://localhost:3000`.
 
 ## Scripts
 
-| Comando | Descrição |
+| Command | Description |
 |---|---|
-| `npm run dev` | Servidor de desenvolvimento (Express + Vite HMR) |
-| `npm run build` | Build de produção |
-| `npm run start` | Inicia servidor de produção (requer build) |
-| `npm run lint` | Type-check TypeScript |
+| `npm run dev` | Dev server (Express + Vite HMR) |
+| `npm run build` | Production build |
+| `npm run start` | Start production server (requires build) |
+| `npm run lint` | TypeScript type-check |
 
 ## Deploy (Render)
 
 Build command: `npm install; npm run build`  
 Start command: `npm run start`
 
-Variáveis de ambiente necessárias:
+Required environment variables:
 - `NODE_ENV=production`
-- `PORT=3000` (opcional, padrão 3000)
+- `PORT=3000` (optional, defaults to 3000)
 
-Ambos os domínios (`jogos.deyvyd.com` e `games.deyvyd.com`) apontam via CNAME para o mesmo serviço Render. A detecção de idioma é client-side via `window.location.hostname`.
+Both domains (`jogos.deyvyd.com` and `games.deyvyd.com`) point via CNAME to the same Render service. Language detection is client-side via `window.location.hostname`.
 
-## Estrutura
+## Structure
 
 ```
 src/
-  App.tsx              # Componente raiz, rotas, Socket.io client
-  core/avalon.ts       # Lógica de papéis, narração, atribuições
+  App.tsx              # Root component, routes, Socket.io client
+  core/avalon.ts       # Role logic, narration, assignments
   components/
-    GameGuide.tsx      # Guia rápido de regras
-    GameManual.tsx     # Manual completo
+    GameGuide.tsx      # Quick rules reference
+    GameManual.tsx     # Full game manual
   i18n/
-    index.ts           # Setup i18next + detecção de idioma
+    index.ts           # i18next setup + subdomain language detector
     locales/
-      pt.json          # Strings em português
-      en.json          # Strings em inglês
-server.ts              # Servidor Express + Socket.io
+      pt.json          # Portuguese strings
+      en.json          # English strings
+server.ts              # Express + Socket.io server
 ```
